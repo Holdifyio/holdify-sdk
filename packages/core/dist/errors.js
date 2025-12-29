@@ -30,6 +30,7 @@ export class NetworkError extends HoldifySDKError {
         this.name = 'NetworkError';
     }
 }
+// Alias for consistency with middleware packages
 export class HoldifyError extends Error {
     code;
     statusCode;
@@ -40,4 +41,3 @@ export class HoldifyError extends Error {
         this.name = 'HoldifyError';
     }
 }
-//# sourceMappingURL=errors.js.map

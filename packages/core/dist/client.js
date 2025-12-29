@@ -135,4 +135,3 @@ export class Holdify {
         throw new HoldifySDKError(data.error?.message || 'Request failed', data.error?.code, response.status);
     }
 }
-//# sourceMappingURL=client.js.map

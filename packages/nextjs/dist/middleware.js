@@ -1,14 +1,17 @@
 import { NextResponse } from 'next/server';
 import { Holdify, HoldifyError } from '@holdify/sdk';
 const defaultGetKey = (req) => {
+    // Check Authorization header
     const authHeader = req.headers.get('authorization');
     if (authHeader?.startsWith('Bearer ')) {
         return authHeader.slice(7);
     }
+    // Check x-api-key header
     const apiKeyHeader = req.headers.get('x-api-key');
     if (apiKeyHeader) {
         return apiKeyHeader;
     }
+    // Check query parameter
     const queryKey = req.nextUrl.searchParams.get('api_key');
     if (queryKey) {
         return queryKey;
@@ -42,13 +45,16 @@ export function createHoldifyMiddleware(config) {
                 const error = new HoldifyError('INVALID_KEY', 'API key is invalid or expired', 401);
                 return onError(error, req);
             }
+            // Continue with request, add headers
             const response = NextResponse.next();
+            // Set rate limit headers
             if (result.rateLimit?.limit)
                 response.headers.set('X-RateLimit-Limit', String(result.rateLimit.limit));
             if (result.rateLimit?.remaining !== undefined)
                 response.headers.set('X-RateLimit-Remaining', String(result.rateLimit.remaining));
             if (result.rateLimit?.reset)
                 response.headers.set('X-RateLimit-Reset', String(result.rateLimit.reset));
+            // Pass verification result via header (can be parsed in API routes)
             response.headers.set('X-Holdify-Result', JSON.stringify(result));
             return response;
         }
@@ -61,6 +67,7 @@ export function createHoldifyMiddleware(config) {
         }
     };
 }
+// Helper to parse result in API routes
 export function getHoldifyResult(req) {
     const header = req.headers.get('X-Holdify-Result');
     if (!header)
@@ -72,4 +79,3 @@ export function getHoldifyResult(req) {
         return null;
     }
 }
-//# sourceMappingURL=middleware.js.map

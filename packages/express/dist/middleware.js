@@ -1,13 +1,16 @@
 import { Holdify, HoldifyError } from '@holdify/sdk';
 const defaultGetKey = (req) => {
+    // Check Authorization header
     const authHeader = req.headers.authorization;
     if (authHeader?.startsWith('Bearer ')) {
         return authHeader.slice(7);
     }
+    // Check x-api-key header
     const apiKeyHeader = req.headers['x-api-key'];
     if (typeof apiKeyHeader === 'string') {
         return apiKeyHeader;
     }
+    // Check query parameter
     const queryKey = req.query.api_key;
     if (typeof queryKey === 'string') {
         return queryKey;
@@ -42,13 +45,16 @@ export function holdifyMiddleware(config) {
                 const error = new HoldifyError('INVALID_KEY', 'API key is invalid or expired', 401);
                 return onError(error, req, res);
             }
+            // Attach result to request
             req.holdify = result;
+            // Set rate limit headers
             if (result.rateLimit?.limit)
                 res.setHeader('X-RateLimit-Limit', result.rateLimit.limit);
             if (result.rateLimit?.remaining !== undefined)
                 res.setHeader('X-RateLimit-Remaining', result.rateLimit.remaining);
             if (result.rateLimit?.reset)
                 res.setHeader('X-RateLimit-Reset', result.rateLimit.reset);
+            // Call success callback if provided
             if (config.onSuccess) {
                 config.onSuccess(result, req);
             }
@@ -63,4 +69,3 @@ export function holdifyMiddleware(config) {
         }
     };
 }
-//# sourceMappingURL=middleware.js.map
