@@ -1,0 +1,107 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { Holdify, HoldifyError, type VerifyResult } from '@holdify/sdk';
+
+export interface HoldifyNextConfig {
+  apiKey: string;
+  baseUrl?: string;
+  getKey?: (req: NextRequest) => string | undefined;
+  matcher?: string | string[];
+  onError?: (error: HoldifyError, req: NextRequest) => NextResponse;
+}
+
+const defaultGetKey = (req: NextRequest): string | undefined => {
+  // Check Authorization header
+  const authHeader = req.headers.get('authorization');
+  if (authHeader?.startsWith('Bearer ')) {
+    return authHeader.slice(7);
+  }
+
+  // Check x-api-key header
+  const apiKeyHeader = req.headers.get('x-api-key');
+  if (apiKeyHeader) {
+    return apiKeyHeader;
+  }
+
+  // Check query parameter
+  const queryKey = req.nextUrl.searchParams.get('api_key');
+  if (queryKey) {
+    return queryKey;
+  }
+
+  return undefined;
+};
+
+const defaultOnError = (error: HoldifyError, _req: NextRequest): NextResponse => {
+  return NextResponse.json(
+    {
+      error: {
+        code: error.code,
+        message: error.message,
+      },
+    },
+    { status: error.statusCode || 500 }
+  );
+};
+
+export function createHoldifyMiddleware(config: HoldifyNextConfig) {
+  const client = new Holdify({
+    apiKey: config.apiKey,
+    baseUrl: config.baseUrl,
+  });
+
+  const getKey = config.getKey || defaultGetKey;
+  const onError = config.onError || defaultOnError;
+
+  return async (req: NextRequest): Promise<NextResponse | null> => {
+    const key = getKey(req);
+
+    if (!key) {
+      const error = new HoldifyError('MISSING_KEY', 'API key is required', 401);
+      return onError(error, req);
+    }
+
+    try {
+      const result = await client.verify(key);
+
+      if (!result.valid) {
+        const error = new HoldifyError(
+          'INVALID_KEY',
+          'API key is invalid or expired',
+          401
+        );
+        return onError(error, req);
+      }
+
+      // Continue with request, add headers
+      const response = NextResponse.next();
+
+      // Set rate limit headers
+      if (result.rateLimit?.limit) response.headers.set('X-RateLimit-Limit', String(result.rateLimit.limit));
+      if (result.rateLimit?.remaining !== undefined) response.headers.set('X-RateLimit-Remaining', String(result.rateLimit.remaining));
+      if (result.rateLimit?.reset) response.headers.set('X-RateLimit-Reset', String(result.rateLimit.reset));
+
+      // Pass verification result via header (can be parsed in API routes)
+      response.headers.set('X-Holdify-Result', JSON.stringify(result));
+
+      return response;
+    } catch (error) {
+      if (error instanceof HoldifyError) {
+        return onError(error, req);
+      }
+      const unknownError = new HoldifyError('INTERNAL_ERROR', 'Verification failed', 500);
+      return onError(unknownError, req);
+    }
+  };
+}
+
+// Helper to parse result in API routes
+export function getHoldifyResult(req: NextRequest): VerifyResult | null {
+  const header = req.headers.get('X-Holdify-Result');
+  if (!header) return null;
+
+  try {
+    return JSON.parse(header) as VerifyResult;
+  } catch {
+    return null;
+  }
+}

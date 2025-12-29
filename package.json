@@ -1,0 +1,12 @@
+{
+  "name": "holdify-sdk",
+  "private": true,
+  "scripts": {
+    "build": "pnpm -r build",
+    "test": "pnpm -r test",
+    "clean": "pnpm -r clean"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0"
+  }
+}

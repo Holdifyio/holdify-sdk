@@ -1,0 +1,15 @@
+
+> @holdify/sdk-monorepo@0.0.1 build C:\Users\Alix\Documents\GitHub\Holdify-backend\packages\sdk
+> pnpm -r build
+
+Scope: 10 of 11 workspace projects
+../integrations-polar build$ tsc
+../integrations-polar build: Done
+../auth build$ tsc
+../core build$ tsc
+../core build: Done
+../auth build: Done
+../api build$ tsc
+../worker build$ tsc
+../worker build: Done
+../api build: Done
