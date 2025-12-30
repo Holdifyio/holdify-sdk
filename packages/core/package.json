@@ -1,6 +1,6 @@
 {
   "name": "@holdify/sdk",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "Official Holdify SDK for TypeScript",
   "type": "module",
   "main": "./dist/index.js",
@@ -15,7 +15,12 @@
     "build": "tsc",
     "test": "vitest run"
   },
-  "keywords": ["holdify", "api-keys", "rate-limiting", "authentication"],
+  "keywords": [
+    "holdify",
+    "api-keys",
+    "rate-limiting",
+    "authentication"
+  ],
   "author": "Holdify",
   "license": "MIT",
   "devDependencies": {
