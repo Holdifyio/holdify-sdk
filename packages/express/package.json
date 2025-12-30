@@ -1,6 +1,6 @@
 {
   "name": "@holdify/express",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Holdify middleware for Express.js",
   "type": "module",
   "main": "./dist/index.js",
@@ -11,12 +11,19 @@
       "import": "./dist/index.js"
     }
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc",
     "clean": "rm -rf dist"
   },
-  "keywords": ["holdify", "express", "middleware", "api-keys"],
+  "keywords": [
+    "holdify",
+    "express",
+    "middleware",
+    "api-keys"
+  ],
   "author": "Holdify",
   "license": "MIT",
   "peerDependencies": {
