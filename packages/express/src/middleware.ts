@@ -18,7 +18,7 @@ declare global {
 }
 
 const defaultGetKey = (req: Request): string | undefined => {
-  // Check Authorization header
+  // Check Authorization header (recommended)
   const authHeader = req.headers.authorization;
   if (authHeader?.startsWith('Bearer ')) {
     return authHeader.slice(7);
@@ -30,9 +30,14 @@ const defaultGetKey = (req: Request): string | undefined => {
     return apiKeyHeader;
   }
 
-  // Check query parameter
+  // Check query parameter (discouraged - logs to server logs, browser history, etc.)
   const queryKey = req.query.api_key;
   if (typeof queryKey === 'string') {
+    console.warn(
+      '[Holdify SDK] WARNING: API key detected in query parameter. ' +
+      'This is insecure as keys may be logged in server logs, browser history, and Referer headers. ' +
+      'Use Authorization header or x-api-key header instead.'
+    );
     return queryKey;
   }
 

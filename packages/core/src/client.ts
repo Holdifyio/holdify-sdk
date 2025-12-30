@@ -1,6 +1,9 @@
 import type { HoldifyConfig, VerifyOptions, VerifyResult, CreateKeyOptions, ApiKey, TrackUsageEvent } from './types.js';
 import { HoldifySDKError, InvalidKeyError, RateLimitError, NetworkError } from './errors.js';
 
+const OFFICIAL_BASE_URL = 'https://api.holdify.io';
+const API_KEY_PREFIXES = ['hk_proj_live_', 'hk_proj_test_', 'hk_live_', 'hk_test_'];
+
 export class Holdify {
   private apiKey: string;
   private baseUrl: string;
@@ -11,8 +14,25 @@ export class Holdify {
       throw new HoldifySDKError('API key is required');
     }
 
+    // Validate API key format
+    const hasValidPrefix = API_KEY_PREFIXES.some(prefix => config.apiKey.startsWith(prefix));
+    if (!hasValidPrefix) {
+      throw new HoldifySDKError(
+        `Invalid API key format. Key must start with one of: ${API_KEY_PREFIXES.join(', ')}`
+      );
+    }
+
+    // Warn if using custom baseUrl (potential security risk)
+    if (config.baseUrl && config.baseUrl !== OFFICIAL_BASE_URL) {
+      console.warn(
+        '[Holdify SDK] WARNING: Custom baseUrl detected. ' +
+        'Your API key will be sent to this URL. ' +
+        'Only use custom URLs for local development or self-hosted instances.'
+      );
+    }
+
     this.apiKey = config.apiKey;
-    this.baseUrl = config.baseUrl || 'https://api.holdify.io';
+    this.baseUrl = config.baseUrl || OFFICIAL_BASE_URL;
     this.timeout = config.timeout || 10000;
   }
 
