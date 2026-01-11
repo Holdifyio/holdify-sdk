@@ -1,13 +1,48 @@
-import type { HoldifyConfig, VerifyOptions, VerifyResult, CreateKeyOptions, ApiKey, TrackUsageEvent } from './types.js';
-import { HoldifySDKError, InvalidKeyError, RateLimitError, NetworkError } from './errors.js';
+import type {
+  HoldifyConfig,
+  VerifyOptions,
+  VerifyResult,
+  CreateKeyOptions,
+  ApiKey,
+  TrackUsageEvent,
+  ReportUsageOptions,
+  ReportUsageResult,
+  AnalyzePromptOptions,
+  AnalyzePromptResult,
+  BudgetWarningCallback,
+  BudgetWarningInfo
+} from './types.js';
+import {
+  HoldifySDKError,
+  InvalidKeyError,
+  RateLimitError,
+  NetworkError,
+  TokenLimitExceededError,
+  BudgetExceededError,
+  PromptBlockedError
+} from './errors.js';
 
 const OFFICIAL_BASE_URL = 'https://api.holdify.io';
 const API_KEY_PREFIXES = ['hk_proj_live_', 'hk_proj_test_', 'hk_live_', 'hk_test_'];
 
+/**
+ * Holdify SDK client for API key verification, usage tracking, and access control.
+ *
+ * @example
+ * ```typescript
+ * const holdify = new Holdify({
+ *   apiKey: process.env.HOLDIFY_PROJECT_KEY,
+ *   onBudgetWarning: (info) => {
+ *     console.warn(`Budget ${info.percentUsed}% used for key ${info.keyHint}`);
+ *   }
+ * });
+ * ```
+ */
 export class Holdify {
   private apiKey: string;
   private baseUrl: string;
   private timeout: number;
+  private onBudgetWarning?: BudgetWarningCallback;
 
   constructor(config: HoldifyConfig) {
     if (!config.apiKey) {
@@ -34,18 +69,63 @@ export class Holdify {
     this.apiKey = config.apiKey;
     this.baseUrl = config.baseUrl || OFFICIAL_BASE_URL;
     this.timeout = config.timeout || 10000;
+    this.onBudgetWarning = config.onBudgetWarning;
   }
 
+  /**
+   * Verify an API key and optionally reserve tokens/budget.
+   *
+   * @param key - The API key to verify
+   * @param options - Verification options including token estimates
+   * @returns Verification result with budget and usage info
+   * @throws {InvalidKeyError} If the key is invalid
+   * @throws {TokenLimitExceededError} If token limit would be exceeded
+   * @throws {BudgetExceededError} If budget limit would be exceeded
+   *
+   * @example
+   * ```typescript
+   * const result = await holdify.verify(apiKey, {
+   *   tokens: 5000,
+   *   estimatedCost: 10, // cents
+   *   onBudgetWarning: (info) => {
+   *     console.warn(`Budget ${info.percentUsed}% used`);
+   *   }
+   * });
+   * ```
+   */
   async verify(key: string, options: VerifyOptions = {}): Promise<VerifyResult> {
-    const { resource = 'api-calls', units = 1 } = options;
+    const {
+      resource = 'api-calls',
+      units = 1,
+      tokens,
+      estimatedCost,
+      onBudgetWarning
+    } = options;
 
     try {
       const response = await this.request('/v1/verify', {
         method: 'POST',
-        body: JSON.stringify({ key, resource, units })
+        body: JSON.stringify({ key, resource, units, tokens, estimatedCost })
       });
 
-      return await response.json();
+      const result: VerifyResult = await response.json();
+
+      // Check for budget warning and invoke callbacks
+      if (result.budget?.warningExceeded) {
+        const warningInfo: BudgetWarningInfo = {
+          budget: result.budget,
+          percentUsed: (result.budget.spent / result.budget.limit) * 100,
+          keyHint: this.maskKey(key)
+        };
+
+        // Invoke per-call callback first
+        onBudgetWarning?.(warningInfo);
+
+        // Then invoke global callback
+        this.onBudgetWarning?.(warningInfo);
+      }
+
+      return result;
     } catch (error) {
       if (error instanceof HoldifySDKError) throw error;
       throw new NetworkError('Failed to verify key', error as Error);
@@ -121,6 +201,106 @@ export class Holdify {
     }
   }
 
+  /**
+   * Report actual token usage after an AI call completes.
+   *
+   * @param options - Usage details including actual token counts
+   * @returns Result with updated budget information
+   *
+   * @example
+   * ```typescript
+   * await holdify.reportUsage({
+   *   key: apiKey,
+   *   inputTokens: 1500,
+   *   outputTokens: 3000,
+   *   model: 'gpt-4',
+   *   cost: 15 // cents
+   * });
+   * ```
+   */
+  async reportUsage(options: ReportUsageOptions): Promise<ReportUsageResult> {
+    const {
+      key,
+      inputTokens,
+      outputTokens,
+      totalTokens = inputTokens + outputTokens,
+      cost,
+      model,
+      requestId
+    } = options;
+
+    try {
+      const response = await this.request('/v1/usage/report', {
+        method: 'POST',
+        body: JSON.stringify({
+          key,
+          inputTokens,
+          outputTokens,
+          totalTokens,
+          cost,
+          model,
+          requestId
+        })
+      });
+
+      return await response.json();
+    } catch (error) {
+      if (error instanceof HoldifySDKError) throw error;
+      throw new NetworkError('Failed to report usage', error as Error);
+    }
+  }
+
+  /**
+   * Analyze a prompt for potential security issues like injection attacks.
+   *
+   * @param options - The prompt and context to analyze
+   * @returns Analysis result with threat detection
+   * @throws {PromptBlockedError} If the prompt is blocked
+   *
+   * @example
+   * ```typescript
+   * const result = await holdify.analyzePrompt({
+   *   prompt: userInput,
+   *   context: { source: 'user-input' }
+   * });
+   *
+   * if (!result.safe) {
+   *   console.warn(`Threats detected: ${result.threats.length}`);
+   * }
+   * ```
+   */
+  async analyzePrompt(options: AnalyzePromptOptions): Promise<AnalyzePromptResult> {
+    const { prompt, context } = options;
+
+    try {
+      const response = await this.request('/v1/security/analyze-prompt', {
+        method: 'POST',
+        body: JSON.stringify({ prompt, context })
+      });
+
+      const result: AnalyzePromptResult = await response.json();
+
+      // If the prompt is blocked, throw a specific error
+      if (result.blocked) {
+        throw new PromptBlockedError(
+          result.explanation || 'Prompt blocked due to security policy',
+          result.riskScore,
+          result.threats
+        );
+      }
+
+      return result;
+    } catch (error) {
+      if (error instanceof HoldifySDKError) throw error;
+      throw new NetworkError('Failed to analyze prompt', error as Error);
+    }
+  }
+
+  private maskKey(key: string): string {
+    if (key.length <= 12) return '***';
+    return key.slice(0, 8) + '...' + key.slice(-4);
+  }
+
   private async request(path: string, options: RequestInit): Promise<Response> {
     const url = `${this.baseUrl}${path}`;
 
@@ -159,8 +339,30 @@ export class Holdify {
       throw new InvalidKeyError(data.error?.message);
     }
 
+    if (response.status === 402) {
+      // Budget exceeded
+      throw new BudgetExceededError(
+        data.error?.message,
+        data.error?.limit,
+        data.error?.spent,
+        data.error?.remaining,
+        data.error?.resetAt
+      );
+    }
+
     if (response.status === 429) {
       const retryAfter = parseInt(response.headers.get('Retry-After') || '60');
+
+      // Check if it's a token limit error
+      if (data.error?.code === 'TOKEN_LIMIT_EXCEEDED') {
+        throw new TokenLimitExceededError(
+          data.error.message,
+          data.error.limit,
+          data.error.requested,
+          data.error.remaining
+        );
+      }
+
       throw new RateLimitError(data.error?.message, retryAfter);
     }
 

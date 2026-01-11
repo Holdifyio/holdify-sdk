@@ -1,12 +1,34 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { Holdify, HoldifyError, type VerifyResult } from '@holdify/sdk';
+import {
+  Holdify,
+  HoldifyError,
+  TokenLimitExceededError,
+  BudgetExceededError,
+  PromptBlockedError,
+  type VerifyResult,
+  type BudgetWarningCallback
+} from '@holdify/sdk';
 
+/**
+ * Configuration for the Holdify Next.js middleware.
+ */
 export interface HoldifyNextConfig {
+  /** Your Holdify project API key */
   apiKey: string;
+  /** Custom API base URL (for self-hosted instances) */
   baseUrl?: string;
+  /** Custom function to extract the API key from the request */
   getKey?: (req: NextRequest) => string | undefined;
+  /** Route matcher pattern(s) */
   matcher?: string | string[];
-  onError?: (error: HoldifyError, req: NextRequest) => NextResponse;
+  /** Custom error handler */
+  onError?: (error: HoldifyError | TokenLimitExceededError | BudgetExceededError | PromptBlockedError, req: NextRequest) => NextResponse;
+  /** Extract estimated token count from the request */
+  getTokenEstimate?: (req: NextRequest) => number | undefined;
+  /** Extract estimated cost (in cents) from the request */
+  getCostEstimate?: (req: NextRequest) => number | undefined;
+  /** Callback invoked when budget warning threshold is exceeded */
+  onBudgetWarning?: BudgetWarningCallback;
 }
 
 const defaultGetKey = (req: NextRequest): string | undefined => {
@@ -36,7 +58,24 @@ const defaultGetKey = (req: NextRequest): string | undefined => {
   return undefined;
 };
 
-const defaultOnError = (error: HoldifyError, _req: NextRequest): NextResponse => {
+const defaultOnError = (
+  error: HoldifyError | TokenLimitExceededError | BudgetExceededError | PromptBlockedError,
+  _req: NextRequest
+): NextResponse => {
+  const headers: Record<string, string> = {};
+
+  // Set appropriate headers for new error types
+  if (error instanceof TokenLimitExceededError) {
+    headers['X-Tokens-Limit'] = String(error.limit);
+    headers['X-Tokens-Remaining'] = String(error.remaining);
+  }
+
+  if (error instanceof BudgetExceededError) {
+    headers['X-Budget-Limit'] = String(error.limit);
+    headers['X-Budget-Remaining'] = String(error.remaining);
+    headers['X-Budget-Reset'] = error.resetAt;
+  }
+
   return NextResponse.json(
     {
       error: {
@@ -44,14 +83,38 @@ const defaultOnError = (error: HoldifyError, _req: NextRequest): NextResponse =>
         message: error.message,
       },
     },
-    { status: error.statusCode || 500 }
+    { status: error.statusCode || 500, headers }
   );
 };
 
+/**
+ * Create Next.js middleware for Holdify API key verification.
+ *
+ * @example
+ * ```typescript
+ * // middleware.ts
+ * import { createHoldifyMiddleware } from '@holdify/nextjs';
+ *
+ * const holdify = createHoldifyMiddleware({
+ *   apiKey: process.env.HOLDIFY_PROJECT_KEY!,
+ *   getTokenEstimate: (req) => {
+ *     // Estimate tokens from request body
+ *     return undefined;
+ *   }
+ * });
+ *
+ * export async function middleware(request) {
+ *   if (request.nextUrl.pathname.startsWith('/api')) {
+ *     return holdify(request);
+ *   }
+ * }
+ * ```
+ */
 export function createHoldifyMiddleware(config: HoldifyNextConfig) {
   const client = new Holdify({
     apiKey: config.apiKey,
     baseUrl: config.baseUrl,
+    onBudgetWarning: config.onBudgetWarning,
   });
 
   const getKey = config.getKey || defaultGetKey;
@@ -66,7 +129,14 @@ export function createHoldifyMiddleware(config: HoldifyNextConfig) {
     }
 
     try {
-      const result = await client.verify(key);
+      // Extract token/cost estimates if provided
+      const tokens = config.getTokenEstimate?.(req);
+      const estimatedCost = config.getCostEstimate?.(req);
+
+      const result = await client.verify(key, {
+        tokens,
+        estimatedCost
+      });
 
       if (!result.valid) {
         const error = new HoldifyError(
@@ -85,11 +155,36 @@ export function createHoldifyMiddleware(config: HoldifyNextConfig) {
       if (result.rateLimit?.remaining !== undefined) response.headers.set('X-RateLimit-Remaining', String(result.rateLimit.remaining));
       if (result.rateLimit?.reset) response.headers.set('X-RateLimit-Reset', String(result.rateLimit.reset));
 
+      // Set budget headers if present
+      if (result.budget) {
+        response.headers.set('X-Budget-Limit', String(result.budget.limit));
+        response.headers.set('X-Budget-Remaining', String(result.budget.remaining));
+        response.headers.set('X-Budget-Reset', result.budget.resetAt);
+      }
+
+      // Set token usage headers if present
+      if (result.usage) {
+        response.headers.set('X-Tokens-Used', String(result.usage.tokensUsed));
+        if (result.usage.tokenLimit !== null) {
+          response.headers.set('X-Tokens-Limit', String(result.usage.tokenLimit));
+        }
+        if (result.usage.tokensRemaining !== null) {
+          response.headers.set('X-Tokens-Remaining', String(result.usage.tokensRemaining));
+        }
+      }
+
       // Pass verification result via header (can be parsed in API routes)
       response.headers.set('X-Holdify-Result', JSON.stringify(result));
 
       return response;
     } catch (error) {
+      // Handle new error types
+      if (error instanceof TokenLimitExceededError ||
+          error instanceof BudgetExceededError ||
+          error instanceof PromptBlockedError) {
+        return onError(error, req);
+      }
+
       if (error instanceof HoldifyError) {
         return onError(error, req);
       }
@@ -99,7 +194,19 @@ export function createHoldifyMiddleware(config: HoldifyNextConfig) {
   };
 }
 
-// Helper to parse result in API routes
+/**
+ * Helper to parse Holdify verification result in API routes.
+ *
+ * @example
+ * ```typescript
+ * export async function GET(request: NextRequest) {
+ *   const result = getHoldifyResult(request);
+ *   if (result) {
+ *     console.log(`Plan: ${result.plan}`);
+ *   }
+ * }
+ * ```
+ */
 export function getHoldifyResult(req: NextRequest): VerifyResult | null {
   const header = req.headers.get('X-Holdify-Result');
   if (!header) return null;

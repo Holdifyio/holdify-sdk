@@ -9,6 +9,14 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./openai": {
+      "types": "./dist/wrappers/openai.d.ts",
+      "import": "./dist/wrappers/openai.js"
+    },
+    "./anthropic": {
+      "types": "./dist/wrappers/anthropic.d.ts",
+      "import": "./dist/wrappers/anthropic.js"
     }
   },
   "scripts": {
@@ -19,7 +27,10 @@
     "holdify",
     "api-keys",
     "rate-limiting",
-    "authentication"
+    "authentication",
+    "ai-gateway",
+    "token-tracking",
+    "usage-metering"
   ],
   "author": "Holdify",
   "license": "MIT",
@@ -27,5 +38,17 @@
     "@types/node": "^22.0.0",
     "typescript": "^5.7.0",
     "vitest": "^2.1.0"
+  },
+  "peerDependencies": {
+    "openai": "^4.0.0",
+    "@anthropic-ai/sdk": "^0.20.0"
+  },
+  "peerDependenciesMeta": {
+    "openai": {
+      "optional": true
+    },
+    "@anthropic-ai/sdk": {
+      "optional": true
+    }
   }
 }
