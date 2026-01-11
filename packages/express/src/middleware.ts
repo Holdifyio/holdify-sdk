@@ -1,12 +1,34 @@
 import type { Request, Response, NextFunction } from 'express';
-import { Holdify, HoldifyError, type VerifyResult } from '@holdify/sdk';
+import {
+  Holdify,
+  HoldifyError,
+  TokenLimitExceededError,
+  BudgetExceededError,
+  PromptBlockedError,
+  type VerifyResult,
+  type BudgetWarningCallback
+} from '@holdify/sdk';
 
+/**
+ * Configuration for the Holdify Express middleware.
+ */
 export interface HoldifyMiddlewareConfig {
+  /** Your Holdify project API key */
   apiKey: string;
+  /** Custom API base URL (for self-hosted instances) */
   baseUrl?: string;
+  /** Custom function to extract the API key from the request */
   getKey?: (req: Request) => string | undefined;
-  onError?: (error: HoldifyError, req: Request, res: Response) => void;
+  /** Custom error handler */
+  onError?: (error: HoldifyError | TokenLimitExceededError | BudgetExceededError | PromptBlockedError, req: Request, res: Response) => void;
+  /** Called on successful verification */
   onSuccess?: (result: VerifyResult, req: Request) => void;
+  /** Extract estimated token count from the request */
+  getTokenEstimate?: (req: Request) => number | undefined;
+  /** Extract estimated cost (in cents) from the request */
+  getCostEstimate?: (req: Request) => number | undefined;
+  /** Callback invoked when budget warning threshold is exceeded */
+  onBudgetWarning?: BudgetWarningCallback;
 }
 
 declare global {
@@ -45,11 +67,24 @@ const defaultGetKey = (req: Request): string | undefined => {
 };
 
 const defaultOnError = (
-  error: HoldifyError,
+  error: HoldifyError | TokenLimitExceededError | BudgetExceededError | PromptBlockedError,
   _req: Request,
   res: Response
 ): void => {
   const statusCode = error.statusCode || 500;
+
+  // Set appropriate headers for new error types
+  if (error instanceof TokenLimitExceededError) {
+    res.setHeader('X-Tokens-Limit', error.limit);
+    res.setHeader('X-Tokens-Remaining', error.remaining);
+  }
+
+  if (error instanceof BudgetExceededError) {
+    res.setHeader('X-Budget-Limit', error.limit);
+    res.setHeader('X-Budget-Remaining', error.remaining);
+    res.setHeader('X-Budget-Reset', error.resetAt);
+  }
+
   res.status(statusCode).json({
     error: {
       code: error.code,
@@ -58,10 +93,30 @@ const defaultOnError = (
   });
 };
 
+/**
+ * Create Express middleware for Holdify API key verification.
+ *
+ * @example
+ * ```typescript
+ * import express from 'express';
+ * import { holdifyMiddleware } from '@holdify/express';
+ *
+ * const app = express();
+ *
+ * app.use('/api', holdifyMiddleware({
+ *   apiKey: process.env.HOLDIFY_PROJECT_KEY,
+ *   getTokenEstimate: (req) => req.body?.estimatedTokens,
+ *   onBudgetWarning: (info) => {
+ *     console.warn(`Budget ${info.percentUsed}% used`);
+ *   }
+ * }));
+ * ```
+ */
 export function holdifyMiddleware(config: HoldifyMiddlewareConfig) {
   const client = new Holdify({
     apiKey: config.apiKey,
     baseUrl: config.baseUrl,
+    onBudgetWarning: config.onBudgetWarning,
   });
 
   const getKey = config.getKey || defaultGetKey;
@@ -76,7 +131,14 @@ export function holdifyMiddleware(config: HoldifyMiddlewareConfig) {
     }
 
     try {
-      const result = await client.verify(key);
+      // Extract token/cost estimates if provided
+      const tokens = config.getTokenEstimate?.(req);
+      const estimatedCost = config.getCostEstimate?.(req);
+
+      const result = await client.verify(key, {
+        tokens,
+        estimatedCost
+      });
 
       if (!result.valid) {
         const error = new HoldifyError(
@@ -95,6 +157,24 @@ export function holdifyMiddleware(config: HoldifyMiddlewareConfig) {
       if (result.rateLimit?.remaining !== undefined) res.setHeader('X-RateLimit-Remaining', result.rateLimit.remaining);
       if (result.rateLimit?.reset) res.setHeader('X-RateLimit-Reset', result.rateLimit.reset);
 
+      // Set budget headers if present
+      if (result.budget) {
+        res.setHeader('X-Budget-Limit', result.budget.limit);
+        res.setHeader('X-Budget-Remaining', result.budget.remaining);
+        res.setHeader('X-Budget-Reset', result.budget.resetAt);
+      }
+
+      // Set token usage headers if present
+      if (result.usage) {
+        res.setHeader('X-Tokens-Used', result.usage.tokensUsed);
+        if (result.usage.tokenLimit !== null) {
+          res.setHeader('X-Tokens-Limit', result.usage.tokenLimit);
+        }
+        if (result.usage.tokensRemaining !== null) {
+          res.setHeader('X-Tokens-Remaining', result.usage.tokensRemaining);
+        }
+      }
+
       // Call success callback if provided
       if (config.onSuccess) {
         config.onSuccess(result, req);
@@ -102,6 +182,13 @@ export function holdifyMiddleware(config: HoldifyMiddlewareConfig) {
 
       next();
     } catch (error) {
+      // Handle new error types
+      if (error instanceof TokenLimitExceededError ||
+          error instanceof BudgetExceededError ||
+          error instanceof PromptBlockedError) {
+        return onError(error, req, res);
+      }
+
       if (error instanceof HoldifyError) {
         return onError(error, req, res);
       }

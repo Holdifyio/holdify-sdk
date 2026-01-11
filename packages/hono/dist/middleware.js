@@ -1,4 +1,4 @@
-import { Holdify, HoldifyError } from '@holdify/sdk';
+import { Holdify, HoldifyError, TokenLimitExceededError, BudgetExceededError, PromptBlockedError } from '@holdify/sdk';
 const defaultGetKey = (c) => {
     // Check Authorization header (recommended)
     const authHeader = c.req.header('authorization');
@@ -21,6 +21,16 @@ const defaultGetKey = (c) => {
     return undefined;
 };
 const defaultOnError = (error, c) => {
+    // Set appropriate headers for new error types
+    if (error instanceof TokenLimitExceededError) {
+        c.header('X-Tokens-Limit', String(error.limit));
+        c.header('X-Tokens-Remaining', String(error.remaining));
+    }
+    if (error instanceof BudgetExceededError) {
+        c.header('X-Budget-Limit', String(error.limit));
+        c.header('X-Budget-Remaining', String(error.remaining));
+        c.header('X-Budget-Reset', error.resetAt);
+    }
     c.status((error.statusCode || 500));
     return c.json({
         error: {
@@ -29,10 +39,35 @@ const defaultOnError = (error, c) => {
         },
     });
 };
+/**
+ * Create Hono middleware for Holdify API key verification.
+ *
+ * @example
+ * ```typescript
+ * import { Hono } from 'hono';
+ * import { holdify } from '@holdify/hono';
+ *
+ * const app = new Hono();
+ *
+ * app.use('/api/*', holdify({
+ *   apiKey: process.env.HOLDIFY_PROJECT_KEY!,
+ *   getTokenEstimate: (c) => {
+ *     // Estimate tokens from request
+ *     return undefined;
+ *   }
+ * }));
+ *
+ * app.get('/api/data', (c) => {
+ *   const { remaining, budget } = c.get('holdify');
+ *   return c.json({ remaining, budget });
+ * });
+ * ```
+ */
 export function holdify(config) {
     const client = new Holdify({
         apiKey: config.apiKey,
         baseUrl: config.baseUrl,
+        onBudgetWarning: config.onBudgetWarning,
     });
     const getKey = config.getKey || defaultGetKey;
     const onError = config.onError || defaultOnError;
@@ -43,7 +78,13 @@ export function holdify(config) {
             return onError(error, c);
         }
         try {
-            const result = await client.verify(key);
+            // Extract token/cost estimates if provided
+            const tokens = config.getTokenEstimate?.(c);
+            const estimatedCost = config.getCostEstimate?.(c);
+            const result = await client.verify(key, {
+                tokens,
+                estimatedCost
+            });
             if (!result.valid) {
                 const error = new HoldifyError('INVALID_KEY', 'API key is invalid or expired', 401);
                 return onError(error, c);
@@ -57,9 +98,31 @@ export function holdify(config) {
                 c.header('X-RateLimit-Remaining', String(result.rateLimit.remaining));
             if (result.rateLimit?.reset)
                 c.header('X-RateLimit-Reset', String(result.rateLimit.reset));
+            // Set budget headers if present
+            if (result.budget) {
+                c.header('X-Budget-Limit', String(result.budget.limit));
+                c.header('X-Budget-Remaining', String(result.budget.remaining));
+                c.header('X-Budget-Reset', result.budget.resetAt);
+            }
+            // Set token usage headers if present
+            if (result.usage) {
+                c.header('X-Tokens-Used', String(result.usage.tokensUsed));
+                if (result.usage.tokenLimit !== null) {
+                    c.header('X-Tokens-Limit', String(result.usage.tokenLimit));
+                }
+                if (result.usage.tokensRemaining !== null) {
+                    c.header('X-Tokens-Remaining', String(result.usage.tokensRemaining));
+                }
+            }
             await next();
         }
         catch (error) {
+            // Handle new error types
+            if (error instanceof TokenLimitExceededError ||
+                error instanceof BudgetExceededError ||
+                error instanceof PromptBlockedError) {
+                return onError(error, c);
+            }
             if (error instanceof HoldifyError) {
                 return onError(error, c);
             }
